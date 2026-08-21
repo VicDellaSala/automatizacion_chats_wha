@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 from io import BytesIO
 
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
+
 
 # ============================================================
 # CONFIGURACIÓN DE LA PÁGINA
@@ -19,14 +22,48 @@ st.set_page_config(
 
 
 # ============================================================
-# FUNCIONES
+# AGENTES / CHATS
+# ============================================================
+
+AGENTES = [
+    "Centro",
+    "Occidente",
+    "Venpro",
+    "GranPro",
+    "Posmgt25",
+    "Oriente",
+    "TPOS",
+    "POSMaracay",
+    "Virtualnet",
+    "Tipo II",
+    "Multitienda"
+]
+
+
+# ============================================================
+# REMITENTES DEL EQUIPO
+# ============================================================
+
+NUMEROS_EQUIPO = {
+    "584242953004",
+    "584166109623",
+    "584223304698",
+    "584241917586",
+    "584125840961",
+    "584129920211",
+    "584123965504"
+}
+
+NOMBRES_EQUIPO = {
+    "agentesautorizados"
+}
+
+
+# ============================================================
+# FUNCIONES GENERALES
 # ============================================================
 
 def normalizar_texto(texto):
-    """
-    Normaliza espacios especiales que aparecen
-    en los archivos exportados de WhatsApp.
-    """
 
     texto = texto.replace("\u202f", " ")
     texto = texto.replace("\xa0", " ")
@@ -34,16 +71,156 @@ def normalizar_texto(texto):
     return texto
 
 
-def convertir_fecha_hora(fecha_texto, hora_texto, periodo):
-    """
-    Convierte:
+def normalizar_remitente(remitente):
 
-    19/8/2026
-    10:03
-    a. m.
+    remitente = remitente.strip()
 
-    en un objeto datetime de Python.
+    numero = re.sub(
+        r"\D",
+        "",
+        remitente
+    )
+
+    nombre = re.sub(
+        r"\s+",
+        "",
+        remitente.lower()
+    )
+
+    return numero, nombre
+
+
+def es_remitente_equipo(remitente):
+
+    numero, nombre = normalizar_remitente(
+        remitente
+    )
+
+    if numero in NUMEROS_EQUIPO:
+        return True
+
+    if nombre in NOMBRES_EQUIPO:
+        return True
+
+    return False
+
+
+# ============================================================
+# IDENTIFICAR AGENTE SEGÚN NOMBRE DEL ARCHIVO
+# ============================================================
+
+def identificar_agente(nombre_archivo):
     """
+    Intenta detectar automáticamente a qué agente
+    pertenece cada TXT utilizando el nombre del archivo.
+
+    Ejemplos:
+    Chat de WhatsApp con Centro.txt
+    Centro.txt
+    chat_centro_19-08.txt
+
+    -> Centro
+    """
+
+    nombre = nombre_archivo.lower()
+
+    nombre_limpio = re.sub(
+        r"[^a-z0-9]",
+        "",
+        nombre
+    )
+
+    equivalencias = {
+
+        "Centro": [
+            "centro"
+        ],
+
+        "Occidente": [
+            "occidente"
+        ],
+
+        "Venpro": [
+            "venpro"
+        ],
+
+        "GranPro": [
+            "granpro"
+        ],
+
+        "Posmgt25": [
+            "posmgt25",
+            "posmg25"
+        ],
+
+        "Oriente": [
+            "oriente"
+        ],
+
+        "TPOS": [
+            "tpos"
+        ],
+
+        "POSMaracay": [
+            "posmaracay"
+        ],
+
+        "Virtualnet": [
+            "virtualnet"
+        ],
+
+        "Tipo II": [
+            "tipoii",
+            "tipo2"
+        ],
+
+        "Multitienda": [
+            "multitienda"
+        ]
+    }
+
+    for agente, palabras in equivalencias.items():
+
+        for palabra in palabras:
+
+            palabra_limpia = re.sub(
+                r"[^a-z0-9]",
+                "",
+                palabra.lower()
+            )
+
+            if palabra_limpia in nombre_limpio:
+                return agente
+
+    # Si no logra reconocerlo,
+    # utiliza el nombre del archivo sin .txt.
+
+    nombre_base = re.sub(
+        r"\.txt$",
+        "",
+        nombre_archivo,
+        flags=re.IGNORECASE
+    )
+
+    nombre_base = re.sub(
+        r"^chat de whatsapp con\s*",
+        "",
+        nombre_base,
+        flags=re.IGNORECASE
+    )
+
+    return nombre_base.strip()
+
+
+# ============================================================
+# FECHA Y HORA
+# ============================================================
+
+def convertir_fecha_hora(
+    fecha_texto,
+    hora_texto,
+    periodo
+):
 
     periodo = periodo.lower().strip()
 
@@ -55,7 +232,6 @@ def convertir_fecha_hora(fecha_texto, hora_texto, periodo):
     horas = hora.hour
     minutos = hora.minute
 
-    # Convertir formato AM / PM
     if "p" in periodo and horas != 12:
         horas += 12
 
@@ -76,24 +252,21 @@ def convertir_fecha_hora(fecha_texto, hora_texto, periodo):
     )
 
 
+# ============================================================
+# LEER CHAT WHATSAPP
+# ============================================================
+
 def leer_chat_whatsapp(contenido):
-    """
-    Lee el TXT completo de WhatsApp.
 
-    Detecta mensajes de varias líneas y devuelve
-    fecha, remitente y contenido.
-    """
-
-    contenido = normalizar_texto(contenido)
+    contenido = normalizar_texto(
+        contenido
+    )
 
     lineas = contenido.splitlines()
 
     mensajes = []
 
     mensaje_actual = None
-
-    # Ejemplo:
-    # 19/8/2026, 10:03 a. m. - Agentesautorizados: mensaje
 
     patron = re.compile(
         r"^(\d{1,2}/\d{1,2}/\d{4}),\s*"
@@ -105,13 +278,17 @@ def leer_chat_whatsapp(contenido):
 
     for linea in lineas:
 
-        coincidencia = patron.match(linea)
+        coincidencia = patron.match(
+            linea
+        )
 
         if coincidencia:
 
-            # Guardar mensaje anterior
             if mensaje_actual is not None:
-                mensajes.append(mensaje_actual)
+
+                mensajes.append(
+                    mensaje_actual
+                )
 
             fecha_texto = coincidencia.group(1)
             hora_texto = coincidencia.group(2)
@@ -128,66 +305,139 @@ def leer_chat_whatsapp(contenido):
                 )
 
             except Exception:
+
                 fecha_hora = None
 
             mensaje_actual = {
-                "fecha_hora": fecha_hora,
-                "remitente": remitente,
-                "mensaje": texto
+
+                "fecha_hora":
+                    fecha_hora,
+
+                "remitente":
+                    remitente,
+
+                "mensaje":
+                    texto
             }
 
         else:
 
-            # Si la línea no comienza con fecha/hora,
-            # pertenece al mensaje anterior.
-
             if mensaje_actual is not None:
 
-                mensaje_actual["mensaje"] += "\n" + linea
+                mensaje_actual["mensaje"] += (
+                    "\n" + linea
+                )
 
-    # Guardar último mensaje
     if mensaje_actual is not None:
-        mensajes.append(mensaje_actual)
+
+        mensajes.append(
+            mensaje_actual
+        )
 
     return mensajes
 
 
-def detectar_tipo_solicitud(mensaje):
-    """
-    Determina si el mensaje es:
+# ============================================================
+# DETECTAR RIF O SERIAL EN EL MENSAJE
+# ============================================================
 
-    SOLICITUD
-    SOLICITUD-R
-    """
+def mensaje_tiene_rif_o_serial(mensaje):
 
-    texto = mensaje.upper()
+    tiene_rif = re.search(
+        r"\bRIF\s*:",
+        mensaje,
+        re.IGNORECASE
+    )
 
-    # Primero comprobamos SOLICITUD-R
-    # para evitar confundirla con SOLICITUD.
+    tiene_serial = re.search(
+        r"\bSERIAL\s*:",
+        mensaje,
+        re.IGNORECASE
+    )
 
-    if re.search(
-        r"\bSOLICITUD\s*-\s*R\b",
-        texto
-    ):
-        return "SOLICITUD-R"
+    return bool(
+        tiene_rif or tiene_serial
+    )
 
-    if re.search(
-        r"\bSOLICITUD\b",
-        texto
-    ):
-        return "SOLICITUD"
 
-    return None
+# ============================================================
+# DETECTAR SOLICITUD-R AL INICIO
+# ============================================================
 
+def empieza_por_solicitud_r(mensaje):
+
+    texto = mensaje.strip()
+
+    return bool(
+        re.match(
+            r"^[\s*_~]*"
+            r"SOLICITUD\s*-\s*R"
+            r"\s*:?"
+            r"[\s*_~]*",
+            texto,
+            re.IGNORECASE
+        )
+    )
+
+
+# ============================================================
+# CLASIFICAR MENSAJE
+# ============================================================
+
+def detectar_tipo_solicitud(
+    mensaje,
+    remitente
+):
+
+    es_equipo = es_remitente_equipo(
+        remitente
+    )
+
+    tiene_identificador = (
+        mensaje_tiene_rif_o_serial(
+            mensaje
+        )
+    )
+
+    inicia_solicitud_r = (
+        empieza_por_solicitud_r(
+            mensaje
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # EQUIPO
+    # --------------------------------------------------------
+
+    if es_equipo:
+
+        if tiene_identificador:
+            return "SOLICITUD-R"
+
+        if inicia_solicitud_r:
+            return "SOLICITUD-R"
+
+        return None
+
+
+    # --------------------------------------------------------
+    # CLIENTE
+    # --------------------------------------------------------
+
+    else:
+
+        if tiene_identificador:
+            return "SOLICITUD"
+
+        return None
+
+
+# ============================================================
+# EXTRAER RIF
+# ============================================================
 
 def extraer_rif(mensaje):
-    """
-    Extrae el RIF del bloque.
-
-    Ejemplos:
-    V192856201
-    G200002085
-    """
 
     patron = re.search(
         r"RIF\s*:\s*([A-Z]?\s*-?\s*\d+)",
@@ -207,26 +457,36 @@ def extraer_rif(mensaje):
     return rif
 
 
-def analizar_solicitudes(mensajes, desde, hasta):
-    """
-    Filtra por período y detecta solicitudes/respuestas.
-    """
+# ============================================================
+# ANALIZAR MENSAJES
+# ============================================================
+
+def analizar_solicitudes(
+    mensajes,
+    desde,
+    hasta
+):
 
     registros = []
 
     for mensaje in mensajes:
 
-        fecha_hora = mensaje["fecha_hora"]
+        fecha_hora = mensaje[
+            "fecha_hora"
+        ]
 
         if fecha_hora is None:
             continue
 
-        # Filtrar período seleccionado
-        if not (desde <= fecha_hora <= hasta):
+        # Aplicar MISMO rango a todos los chats
+        if not (
+            desde <= fecha_hora <= hasta
+        ):
             continue
 
         tipo = detectar_tipo_solicitud(
-            mensaje["mensaje"]
+            mensaje["mensaje"],
+            mensaje["remitente"]
         )
 
         if tipo is None:
@@ -237,24 +497,33 @@ def analizar_solicitudes(mensajes, desde, hasta):
         )
 
         registros.append({
-            "Fecha y hora": fecha_hora,
-            "Remitente": mensaje["remitente"],
-            "Tipo": tipo,
-            "RIF": rif,
-            "Mensaje": mensaje["mensaje"]
+
+            "Fecha y hora":
+                fecha_hora,
+
+            "Remitente":
+                mensaje["remitente"],
+
+            "Tipo":
+                tipo,
+
+            "RIF":
+                rif,
+
+            "Mensaje":
+                mensaje["mensaje"]
         })
 
-    return pd.DataFrame(registros)
+    return pd.DataFrame(
+        registros
+    )
 
+
+# ============================================================
+# RELACIONAR SOLICITUD CON RESPUESTA
+# ============================================================
 
 def relacionar_solicitudes(df):
-    """
-    Relaciona una SOLICITUD con su SOLICITUD-R
-    principalmente mediante el RIF.
-
-    Toma la primera respuesta posterior
-    que tenga el mismo RIF.
-    """
 
     solicitudes = df[
         df["Tipo"] == "SOLICITUD"
@@ -276,15 +545,21 @@ def relacionar_solicitudes(df):
 
     resultado = []
 
+
     for indice_solicitud, solicitud in solicitudes.iterrows():
 
-        rif = solicitud["RIF"]
+        rif = solicitud[
+            "RIF"
+        ]
 
         respuesta_encontrada = None
+
         indice_respuesta_encontrada = None
 
-        # Solo podemos relacionar automáticamente
-        # mediante RIF si existe.
+
+        # ----------------------------------------------------
+        # MATCH POR RIF
+        # ----------------------------------------------------
 
         if rif:
 
@@ -296,13 +571,26 @@ def relacionar_solicitudes(df):
                 if respuesta["RIF"] != rif:
                     continue
 
-                if respuesta["Fecha y hora"] < solicitud["Fecha y hora"]:
+                if (
+                    respuesta["Fecha y hora"]
+                    < solicitud["Fecha y hora"]
+                ):
                     continue
 
-                respuesta_encontrada = respuesta
-                indice_respuesta_encontrada = indice_respuesta
+                respuesta_encontrada = (
+                    respuesta
+                )
+
+                indice_respuesta_encontrada = (
+                    indice_respuesta
+                )
 
                 break
+
+
+        # ----------------------------------------------------
+        # CONTESTADA
+        # ----------------------------------------------------
 
         if respuesta_encontrada is not None:
 
@@ -311,33 +599,52 @@ def relacionar_solicitudes(df):
             )
 
             diferencia = (
-                respuesta_encontrada["Fecha y hora"]
-                - solicitud["Fecha y hora"]
+                respuesta_encontrada[
+                    "Fecha y hora"
+                ]
+                - solicitud[
+                    "Fecha y hora"
+                ]
             )
 
-            minutos_respuesta = round(
-                diferencia.total_seconds() / 60,
-                1
+            minutos_respuesta = (
+                diferencia.total_seconds()
+                / 60
             )
 
             estado = "Contestada"
 
-            fecha_respuesta = respuesta_encontrada[
-                "Fecha y hora"
-            ]
+            fecha_respuesta = (
+                respuesta_encontrada[
+                    "Fecha y hora"
+                ]
+            )
+
+
+        # ----------------------------------------------------
+        # SIN CONTESTAR
+        # ----------------------------------------------------
 
         else:
 
             estado = "Sin contestar"
+
             fecha_respuesta = None
+
             minutos_respuesta = None
 
+
         resultado.append({
+
             "Fecha solicitud":
-                solicitud["Fecha y hora"],
+                solicitud[
+                    "Fecha y hora"
+                ],
 
             "Solicitante":
-                solicitud["Remitente"],
+                solicitud[
+                    "Remitente"
+                ],
 
             "RIF":
                 rif,
@@ -349,23 +656,233 @@ def relacionar_solicitudes(df):
                 fecha_respuesta,
 
             "Tiempo respuesta (min)":
-                minutos_respuesta
+                round(
+                    minutos_respuesta,
+                    1
+                )
+                if minutos_respuesta is not None
+                else None
         })
 
-    detalle = pd.DataFrame(resultado)
 
-    # Respuestas que no pudieron relacionarse
-    respuestas_sin_vincular = respuestas[
-        ~respuestas.index.isin(respuestas_usadas)
-    ].copy()
+    return pd.DataFrame(
+        resultado
+    )
 
-    return detalle, respuestas_sin_vincular
 
+# ============================================================
+# FORMATEAR TIEMPO
+# ============================================================
+
+def formatear_tiempo(minutos):
+
+    if minutos is None:
+        return "—"
+
+    if pd.isna(minutos):
+        return "—"
+
+    minutos = round(
+        float(minutos)
+    )
+
+    if minutos < 60:
+
+        return (
+            f"{minutos} min"
+        )
+
+    horas = (
+        minutos // 60
+    )
+
+    minutos_restantes = (
+        minutos % 60
+    )
+
+    if minutos_restantes == 0:
+
+        return (
+            f"{horas} h"
+        )
+
+    return (
+        f"{horas} h "
+        f"{minutos_restantes} min"
+    )
+
+
+# ============================================================
+# ESTILIZAR EXCEL
+# ============================================================
+
+def estilizar_excel(writer):
+
+    color_encabezado = "D9E5F2"
+
+    borde_fino = Side(
+        style="thin",
+        color="808080"
+    )
+
+    for nombre_hoja in writer.book.sheetnames:
+
+        hoja = writer.book[
+            nombre_hoja
+        ]
+
+        hoja.freeze_panes = "A2"
+
+        # ----------------------------------------------------
+        # ENCABEZADOS
+        # ----------------------------------------------------
+
+        for celda in hoja[1]:
+
+            celda.font = Font(
+                bold=True
+            )
+
+            celda.fill = PatternFill(
+                fill_type="solid",
+                fgColor=color_encabezado
+            )
+
+            celda.alignment = Alignment(
+                vertical="center"
+            )
+
+            celda.border = Border(
+                left=borde_fino,
+                right=borde_fino,
+                top=borde_fino,
+                bottom=borde_fino
+            )
+
+
+        # ----------------------------------------------------
+        # TODAS LAS CELDAS
+        # ----------------------------------------------------
+
+        for fila in hoja.iter_rows():
+
+            for celda in fila:
+
+                celda.border = Border(
+                    left=borde_fino,
+                    right=borde_fino,
+                    top=borde_fino,
+                    bottom=borde_fino
+                )
+
+                celda.alignment = Alignment(
+                    vertical="center"
+                )
+
+
+        # ----------------------------------------------------
+        # ALTO DE FILAS
+        # ----------------------------------------------------
+
+        hoja.row_dimensions[1].height = 25
+
+        for numero_fila in range(
+            2,
+            hoja.max_row + 1
+        ):
+
+            hoja.row_dimensions[
+                numero_fila
+            ].height = 22
+
+
+        # ----------------------------------------------------
+        # ANCHO DE COLUMNAS
+        # ----------------------------------------------------
+
+        if nombre_hoja == "Resumen":
+
+            anchos = {
+
+                "A": 20,   # Agente
+
+                "B": 15,   # Solicitudes
+
+                "C": 15,   # Contestados
+
+                "D": 17,   # Sin contestar
+
+                "E": 20,   # Tasa
+
+                "F": 32    # Tiempo promedio
+            }
+
+
+        elif nombre_hoja == "Solicitudes":
+
+            anchos = {
+
+                "A": 20,   # Agente
+
+                "B": 23,   # Fecha solicitud
+
+                "C": 24,   # Solicitante
+
+                "D": 18,   # RIF
+
+                "E": 17,   # Estado
+
+                "F": 23,   # Fecha respuesta
+
+                "G": 24,   # Tiempo
+
+                "H": 40    # Observaciones
+            }
+
+
+        else:
+
+            anchos = {}
+
+
+        for columna, ancho in anchos.items():
+
+            hoja.column_dimensions[
+                columna
+            ].width = ancho
+
+
+        # ----------------------------------------------------
+        # FORMATO DE FECHAS
+        # ----------------------------------------------------
+
+        if nombre_hoja == "Solicitudes":
+
+            for fila in range(
+                2,
+                hoja.max_row + 1
+            ):
+
+                hoja[
+                    f"B{fila}"
+                ].number_format = (
+                    "dd/mm/yyyy hh:mm AM/PM"
+                )
+
+                hoja[
+                    f"F{fila}"
+                ].number_format = (
+                    "dd/mm/yyyy hh:mm AM/PM"
+                )
+
+
+# ============================================================
+# CREAR EXCEL
+# ============================================================
 
 def crear_excel(
-    detalle,
-    respuestas_sin_vincular,
-    resumen
+    resumen,
+    detalle
 ):
 
     salida = BytesIO()
@@ -375,11 +892,20 @@ def crear_excel(
         engine="openpyxl"
     ) as writer:
 
+        # ----------------------------------------------------
+        # HOJA 1 - RESUMEN
+        # ----------------------------------------------------
+
         resumen.to_excel(
             writer,
             index=False,
             sheet_name="Resumen"
         )
+
+
+        # ----------------------------------------------------
+        # HOJA 2 - SOLICITUDES
+        # ----------------------------------------------------
 
         detalle.to_excel(
             writer,
@@ -387,11 +913,15 @@ def crear_excel(
             sheet_name="Solicitudes"
         )
 
-        respuestas_sin_vincular.to_excel(
-            writer,
-            index=False,
-            sheet_name="Respuestas sin vincular"
+
+        # ----------------------------------------------------
+        # FORMATO
+        # ----------------------------------------------------
+
+        estilizar_excel(
+            writer
         )
+
 
     salida.seek(0)
 
@@ -399,63 +929,55 @@ def crear_excel(
 
 
 # ============================================================
-# TÍTULO
+# INTERFAZ
 # ============================================================
 
-st.title("Analizador de Atención al Cliente")
+st.title(
+    "Analizador de Atención al Cliente"
+)
 
 st.write(
-    "Carga el archivo TXT exportado de WhatsApp "
+    "Carga los archivos TXT exportados de WhatsApp "
     "para generar las estadísticas."
 )
 
 
 # ============================================================
-# CARGA DEL ARCHIVO
+# CARGAR VARIOS ARCHIVOS
 # ============================================================
 
-archivo = st.file_uploader(
-    "Sube el archivo TXT exportado de WhatsApp",
-    type=["txt"]
+archivos = st.file_uploader(
+    "Sube los archivos TXT exportados de WhatsApp",
+    type=["txt"],
+    accept_multiple_files=True
 )
 
 
 # ============================================================
-# ARCHIVO CARGADO
+# SI SE CARGARON ARCHIVOS
 # ============================================================
 
-if archivo is not None:
+if archivos:
 
-    try:
-
-        contenido = archivo.read().decode(
-            "utf-8"
-        )
-
-    except UnicodeDecodeError:
-
-        archivo.seek(0)
-
-        contenido = archivo.read().decode(
-            "utf-8-sig",
-            errors="replace"
-        )
-
+    cantidad_archivos = len(
+        archivos
+    )
 
     st.success(
-        "Archivo cargado correctamente"
+        f"{cantidad_archivos} archivo(s) cargado(s) correctamente"
     )
 
     st.divider()
 
 
     # ========================================================
-    # FECHA Y HORA
+    # PERÍODO
     # ========================================================
 
     st.subheader(
         "Período a analizar"
     )
+
 
     zona_venezuela = ZoneInfo(
         "America/Caracas"
@@ -468,24 +990,28 @@ if archivo is not None:
     hoy = ahora.date()
 
 
-    # Si hoy es lunes:
-    # viernes anterior.
+    # --------------------------------------------------------
+    # LUNES -> VIERNES
+    # --------------------------------------------------------
 
     if hoy.weekday() == 0:
 
         fecha_desde_default = (
-            hoy - timedelta(days=3)
+            hoy
+            - timedelta(days=3)
         )
 
     else:
 
         fecha_desde_default = (
-            hoy - timedelta(days=1)
+            hoy
+            - timedelta(days=1)
         )
 
 
-    # Hora predeterminada
-    # 16:30 = 4:30 PM
+    # --------------------------------------------------------
+    # 4:30 PM
+    # --------------------------------------------------------
 
     hora_default = time(
         16,
@@ -494,11 +1020,13 @@ if archivo is not None:
 
 
     # ========================================================
-    # INTERVALO DE MINUTOS
+    # INTERVALO
     # ========================================================
 
     intervalo_minutos = st.selectbox(
+
         "Intervalo para seleccionar la hora",
+
         options=[
             5,
             10,
@@ -506,14 +1034,16 @@ if archivo is not None:
             20,
             30
         ],
+
         index=1,
+
         format_func=lambda x:
             f"Cada {x} minutos"
     )
 
 
     # ========================================================
-    # CREAR HORAS
+    # LISTA DE HORAS
     # ========================================================
 
     horas = []
@@ -550,11 +1080,9 @@ if archivo is not None:
             )
 
 
-    # ========================================================
-    # BUSCAR HORA MÁS CERCANA A 4:30 PM
-    # ========================================================
-
-    def minutos_del_dia(hora_obj):
+    def minutos_del_dia(
+        hora_obj
+    ):
 
         return (
             hora_obj.hour * 60
@@ -566,12 +1094,19 @@ if archivo is not None:
         hora_default
     )
 
+
     indice_default = min(
-        range(len(horas)),
+
+        range(
+            len(horas)
+        ),
+
         key=lambda i: abs(
+
             minutos_del_dia(
                 horas[i][1]
             )
+
             - minutos_default
         )
     )
@@ -581,7 +1116,9 @@ if archivo is not None:
     # DESDE / HASTA
     # ========================================================
 
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns(
+        2
+    )
 
 
     with col1:
@@ -591,25 +1128,40 @@ if archivo is not None:
         )
 
         fecha_desde = st.date_input(
+
             "Fecha desde",
-            value=fecha_desde_default,
-            format="DD/MM/YYYY",
-            key="fecha_desde"
+
+            value=
+                fecha_desde_default,
+
+            format=
+                "DD/MM/YYYY",
+
+            key=
+                "fecha_desde"
         )
 
         hora_desde_texto = st.selectbox(
+
             "Hora desde",
+
             options=[
                 texto
                 for texto, _ in horas
             ],
-            index=indice_default,
-            key="hora_desde"
+
+            index=
+                indice_default,
+
+            key=
+                "hora_desde"
         )
 
         hora_desde = dict(
             horas
-        )[hora_desde_texto]
+        )[
+            hora_desde_texto
+        ]
 
 
     with col2:
@@ -619,26 +1171,45 @@ if archivo is not None:
         )
 
         fecha_hasta = st.date_input(
+
             "Fecha hasta",
-            value=hoy,
-            format="DD/MM/YYYY",
-            key="fecha_hasta"
+
+            value=
+                hoy,
+
+            format=
+                "DD/MM/YYYY",
+
+            key=
+                "fecha_hasta"
         )
 
         hora_hasta_texto = st.selectbox(
+
             "Hora hasta",
+
             options=[
                 texto
                 for texto, _ in horas
             ],
-            index=indice_default,
-            key="hora_hasta"
+
+            index=
+                indice_default,
+
+            key=
+                "hora_hasta"
         )
 
         hora_hasta = dict(
             horas
-        )[hora_hasta_texto]
+        )[
+            hora_hasta_texto
+        ]
 
+
+    # ========================================================
+    # COMBINAR
+    # ========================================================
 
     desde = datetime.combine(
         fecha_desde,
@@ -650,7 +1221,6 @@ if archivo is not None:
         hora_hasta
     )
 
-
     st.divider()
 
 
@@ -661,9 +1231,10 @@ if archivo is not None:
     if desde >= hasta:
 
         st.error(
-            "La fecha y hora 'Desde' debe "
-            "ser anterior a la fecha y hora 'Hasta'."
+            "La fecha y hora 'Desde' debe ser anterior "
+            "a la fecha y hora 'Hasta'."
         )
+
 
     else:
 
@@ -685,235 +1256,476 @@ if archivo is not None:
             " "
         )
 
+
         st.info(
-            f"Período seleccionado: "
+            f"Período seleccionado para los "
+            f"{cantidad_archivos} chats: "
             f"desde {desde_texto} "
             f"hasta {hasta_texto}"
         )
 
 
         # ====================================================
-        # LEER Y ANALIZAR CHAT
+        # PROCESAR TODOS LOS CHATS
         # ====================================================
 
-        mensajes = leer_chat_whatsapp(
-            contenido
-        )
+        resumen_resultados = []
 
-        df = analizar_solicitudes(
-            mensajes,
-            desde,
-            hasta
-        )
+        todos_los_detalles = []
 
 
-        # ====================================================
-        # SI NO HAY REGISTROS
-        # ====================================================
+        for archivo in archivos:
 
-        if df.empty:
-
-            st.warning(
-                "No se encontraron SOLICITUDES "
-                "ni SOLICITUD-R dentro del período seleccionado."
-            )
-
-        else:
-
-            detalle, respuestas_sin_vincular = (
-                relacionar_solicitudes(df)
+            agente = identificar_agente(
+                archivo.name
             )
 
 
-            # =================================================
-            # ESTADÍSTICAS
-            # =================================================
+            # ------------------------------------------------
+            # LEER TXT
+            # ------------------------------------------------
 
-            total_solicitudes = len(
-                detalle
-            )
+            try:
 
-            total_contestadas = (
-                detalle["Estado"]
-                .eq("Contestada")
-                .sum()
-            )
-
-            total_sin_contestar = (
-                detalle["Estado"]
-                .eq("Sin contestar")
-                .sum()
-            )
-
-            total_respuestas = len(
-                df[
-                    df["Tipo"]
-                    == "SOLICITUD-R"
-                ]
-            )
-
-
-            if total_solicitudes > 0:
-
-                porcentaje_respuesta = (
-                    total_contestadas
-                    / total_solicitudes
-                    * 100
+                contenido = (
+                    archivo
+                    .getvalue()
+                    .decode("utf-8")
                 )
 
-            else:
+            except UnicodeDecodeError:
+
+                contenido = (
+                    archivo
+                    .getvalue()
+                    .decode(
+                        "utf-8-sig",
+                        errors="replace"
+                    )
+                )
+
+
+            # ------------------------------------------------
+            # LEER MENSAJES
+            # ------------------------------------------------
+
+            mensajes = leer_chat_whatsapp(
+                contenido
+            )
+
+
+            # ------------------------------------------------
+            # ANALIZAR MISMO PERÍODO
+            # ------------------------------------------------
+
+            df = analizar_solicitudes(
+                mensajes,
+                desde,
+                hasta
+            )
+
+
+            # ------------------------------------------------
+            # SI NO HAY REGISTROS
+            # ------------------------------------------------
+
+            if df.empty:
+
+                total_solicitudes = 0
+
+                total_contestadas = 0
+
+                total_sin_contestar = 0
 
                 porcentaje_respuesta = 0
 
+                promedio_respuesta = None
 
-            # =================================================
-            # MOSTRAR ESTADÍSTICAS
-            # =================================================
+                promedio_texto = "—"
 
-            st.subheader(
-                "Estadísticas"
-            )
-
-            col1, col2, col3, col4 = (
-                st.columns(4)
-            )
-
-
-            with col1:
-
-                st.metric(
-                    "Solicitudes",
-                    total_solicitudes
+                detalle = pd.DataFrame(
+                    columns=[
+                        "Fecha solicitud",
+                        "Solicitante",
+                        "RIF",
+                        "Estado",
+                        "Fecha respuesta",
+                        "Tiempo respuesta (min)"
+                    ]
                 )
 
 
-            with col2:
+            # ------------------------------------------------
+            # SI HAY REGISTROS
+            # ------------------------------------------------
 
-                st.metric(
-                    "Contestadas",
-                    total_contestadas
+            else:
+
+                detalle = relacionar_solicitudes(
+                    df
                 )
 
 
-            with col3:
-
-                st.metric(
-                    "Sin contestar",
-                    total_sin_contestar
+                total_solicitudes = len(
+                    detalle
                 )
 
 
-            with col4:
-
-                st.metric(
-                    "Tasa de respuesta",
-                    f"{porcentaje_respuesta:.1f}%"
+                total_contestadas = (
+                    detalle[
+                        "Estado"
+                    ]
+                    .eq(
+                        "Contestada"
+                    )
+                    .sum()
                 )
 
 
-            # =================================================
-            # GRÁFICA
-            # =================================================
+                total_sin_contestar = (
+                    detalle[
+                        "Estado"
+                    ]
+                    .eq(
+                        "Sin contestar"
+                    )
+                    .sum()
+                )
 
-            st.subheader(
-                "Solicitudes vs contestadas"
-            )
 
-            grafica = pd.DataFrame({
-                "Cantidad": [
-                    total_solicitudes,
-                    total_contestadas,
-                    total_sin_contestar
+                if total_solicitudes > 0:
+
+                    porcentaje_respuesta = (
+
+                        total_contestadas
+                        / total_solicitudes
+                        * 100
+                    )
+
+                else:
+
+                    porcentaje_respuesta = 0
+
+
+                tiempos_respuesta = detalle[
+                    detalle[
+                        "Estado"
+                    ]
+                    == "Contestada"
+                ][
+                    "Tiempo respuesta (min)"
                 ]
-            },
-                index=[
-                    "Solicitudes",
-                    "Contestadas",
-                    "Sin contestar"
-                ]
-            )
-
-            st.bar_chart(
-                grafica
-            )
 
 
-            # =================================================
-            # INFORMACIÓN ADICIONAL
-            # =================================================
+                if not tiempos_respuesta.empty:
 
-            st.caption(
-                f"Se detectaron "
-                f"{total_respuestas} mensajes "
-                f"de tipo SOLICITUD-R "
-                f"dentro del período seleccionado."
-            )
+                    promedio_respuesta = (
+                        tiempos_respuesta.mean()
+                    )
+
+                else:
+
+                    promedio_respuesta = None
 
 
-            if len(
-                respuestas_sin_vincular
-            ) > 0:
-
-                st.caption(
-                    f"{len(respuestas_sin_vincular)} "
-                    f"respuesta(s) no pudieron "
-                    f"vincularse con una solicitud "
-                    f"del período mediante el RIF."
+                promedio_texto = (
+                    formatear_tiempo(
+                        promedio_respuesta
+                    )
                 )
 
 
             # =================================================
-            # CREAR RESUMEN PARA EXCEL
+            # RESUMEN DE ESTE AGENTE
             # =================================================
 
-            resumen = pd.DataFrame({
-                "Indicador": [
-                    "Solicitudes",
-                    "Contestadas",
-                    "Sin contestar",
-                    "Total SOLICITUD-R detectadas",
-                    "Respuestas sin vincular",
-                    "Tasa de respuesta"
-                ],
+            resumen_resultados.append({
 
-                "Resultado": [
+                "Agente":
+                    agente,
+
+                "Solicitudes":
                     total_solicitudes,
+
+                "Contestados":
                     total_contestadas,
+
+                "Sin Contestar":
                     total_sin_contestar,
-                    total_respuestas,
-                    len(
-                        respuestas_sin_vincular
+
+                "Tasa de respuesta":
+                    (
+                        f"{porcentaje_respuesta:.1f}%"
                     ),
-                    f"{porcentaje_respuesta:.1f}%"
-                ]
+
+                "Tiempo promedio de respuesta":
+                    promedio_texto
             })
 
 
             # =================================================
-            # EXCEL
+            # DETALLE DE ESTE AGENTE
             # =================================================
 
-            archivo_excel = crear_excel(
-                detalle,
-                respuestas_sin_vincular,
-                resumen
+            if not detalle.empty:
+
+                detalle = (
+                    detalle.copy()
+                )
+
+                detalle.insert(
+                    0,
+                    "Agente",
+                    agente
+                )
+
+                detalle[
+                    "Observaciones"
+                ] = ""
+
+                todos_los_detalles.append(
+                    detalle
+                )
+
+
+        # ====================================================
+        # CREAR RESUMEN
+        # ====================================================
+
+        resumen_df = pd.DataFrame(
+            resumen_resultados
+        )
+
+
+        # ====================================================
+        # ORDENAR RESUMEN SEGÚN LISTA DE AGENTES
+        # ====================================================
+
+        orden_agentes = {
+            agente: indice
+            for indice, agente
+            in enumerate(AGENTES)
+        }
+
+
+        resumen_df[
+            "_orden"
+        ] = resumen_df[
+            "Agente"
+        ].map(
+            orden_agentes
+        ).fillna(
+            999
+        )
+
+
+        resumen_df = (
+            resumen_df
+            .sort_values(
+                "_orden"
+            )
+            .drop(
+                columns=[
+                    "_orden"
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+
+        # ====================================================
+        # UNIR TODAS LAS SOLICITUDES
+        # ====================================================
+
+        if todos_los_detalles:
+
+            detalle_general = pd.concat(
+                todos_los_detalles,
+                ignore_index=True
+            )
+
+        else:
+
+            detalle_general = pd.DataFrame(
+                columns=[
+                    "Agente",
+                    "Fecha solicitud",
+                    "Solicitante",
+                    "RIF",
+                    "Estado",
+                    "Fecha respuesta",
+                    "Tiempo respuesta (min)",
+                    "Observaciones"
+                ]
             )
 
 
-            st.divider()
+        # ====================================================
+        # MOSTRAR ESTADÍSTICAS EN PANTALLA
+        # ====================================================
+
+        st.subheader(
+            "Resumen por agente"
+        )
+
+        st.dataframe(
+            resumen_df,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
-            st.download_button(
-                label="📥 Descargar Excel",
-                data=archivo_excel,
-                file_name=(
-                    "estadisticas_whatsapp_"
-                    f"{fecha_hasta.strftime('%d-%m-%Y')}"
-                    ".xlsx"
-                ),
-                mime=(
-                    "application/"
-                    "vnd.openxmlformats-officedocument."
-                    "spreadsheetml.sheet"
+        # ====================================================
+        # TOTALES GENERALES
+        # ====================================================
+
+        solicitudes_generales = (
+            resumen_df[
+                "Solicitudes"
+            ].sum()
+        )
+
+        contestadas_generales = (
+            resumen_df[
+                "Contestados"
+            ].sum()
+        )
+
+        sin_contestar_generales = (
+            resumen_df[
+                "Sin Contestar"
+            ].sum()
+        )
+
+
+        if solicitudes_generales > 0:
+
+            tasa_general = (
+                contestadas_generales
+                / solicitudes_generales
+                * 100
+            )
+
+        else:
+
+            tasa_general = 0
+
+
+        st.subheader(
+            "Estadísticas generales"
+        )
+
+
+        met1, met2, met3, met4 = st.columns(
+            4
+        )
+
+
+        with met1:
+
+            st.metric(
+                "Solicitudes",
+                int(
+                    solicitudes_generales
                 )
             )
+
+
+        with met2:
+
+            st.metric(
+                "Contestadas",
+                int(
+                    contestadas_generales
+                )
+            )
+
+
+        with met3:
+
+            st.metric(
+                "Sin contestar",
+                int(
+                    sin_contestar_generales
+                )
+            )
+
+
+        with met4:
+
+            st.metric(
+                "Tasa de respuesta",
+                f"{tasa_general:.1f}%"
+            )
+
+
+        # ====================================================
+        # GRÁFICA GENERAL
+        # ====================================================
+
+        st.subheader(
+            "Solicitudes por agente"
+        )
+
+
+        grafica_agentes = (
+            resumen_df[
+                [
+                    "Agente",
+                    "Solicitudes",
+                    "Contestados",
+                    "Sin Contestar"
+                ]
+            ]
+            .set_index(
+                "Agente"
+            )
+        )
+
+
+        st.bar_chart(
+            grafica_agentes
+        )
+
+
+        # ====================================================
+        # GENERAR EXCEL
+        # ====================================================
+
+        archivo_excel = crear_excel(
+            resumen_df,
+            detalle_general
+        )
+
+
+        st.divider()
+
+
+        # ====================================================
+        # DESCARGAR
+        # ====================================================
+
+        st.download_button(
+
+            label=
+                "📥 Descargar Excel",
+
+            data=
+                archivo_excel,
+
+            file_name=(
+                "estadisticas_whatsapp_"
+                f"{fecha_desde.strftime('%d-%m-%Y')}"
+                "al"
+                f"{fecha_hasta.strftime('%d-%m-%Y')}"
+                ".xlsx"
+            ),
+
+            mime=(
+                "application/"
+                "vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            )
+        )
