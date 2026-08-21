@@ -667,7 +667,15 @@ def relacionar_solicitudes(df):
 
 
     return pd.DataFrame(
-        resultado
+        resultado,
+        columns=[
+            "Fecha solicitud",
+            "Solicitante",
+            "RIF",
+            "Estado",
+            "Fecha respuesta",
+            "Tiempo respuesta (min)"
+        ]
     )
 
 
