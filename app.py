@@ -56,6 +56,7 @@ NUMEROS_EQUIPO = {
 
 NOMBRES_EQUIPO = {
     "agentesautorizados"
+    "rubenccr"
 }
 
 
