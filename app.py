@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 from io import BytesIO
 
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from openpyxl.utils import get_column_letter
 
 
 # ============================================================
@@ -56,8 +55,17 @@ NUMEROS_EQUIPO = {
 
 NOMBRES_EQUIPO = {
     "agentesautorizados",
-    "rubenccr"
+    "rubenccr",
+    "Geraldine"
 }
+
+
+# ============================================================
+# HORARIO LABORAL
+# ============================================================
+
+HORA_APERTURA = time(8, 0)
+HORA_CIERRE = time(17, 0)
 
 
 # ============================================================
@@ -111,17 +119,6 @@ def es_remitente_equipo(remitente):
 # ============================================================
 
 def identificar_agente(nombre_archivo):
-    """
-    Intenta detectar automáticamente a qué agente
-    pertenece cada TXT utilizando el nombre del archivo.
-
-    Ejemplos:
-    Chat de WhatsApp con Centro.txt
-    Centro.txt
-    chat_centro_19-08.txt
-
-    -> Centro
-    """
 
     nombre = nombre_archivo.lower()
 
@@ -193,9 +190,6 @@ def identificar_agente(nombre_archivo):
             if palabra_limpia in nombre_limpio:
                 return agente
 
-    # Si no logra reconocerlo,
-    # utiliza el nombre del archivo sin .txt.
-
     nombre_base = re.sub(
         r"\.txt$",
         "",
@@ -251,6 +245,128 @@ def convertir_fecha_hora(
         horas,
         minutos
     )
+
+
+# ============================================================
+# CALCULAR TIEMPO DE RESPUESTA EN HORARIO LABORAL
+# ============================================================
+
+def calcular_minutos_laborales(
+    fecha_solicitud,
+    fecha_respuesta
+):
+    """
+    Calcula únicamente el tiempo que transcurre
+    dentro del horario laboral:
+
+    Lunes a viernes
+    8:00 AM a 5:00 PM
+
+    No cuenta:
+    - noches
+    - sábados
+    - domingos
+
+    Ejemplo:
+    Lunes 4:40 PM
+    Martes 8:20 AM
+    = 40 minutos
+    """
+
+    if fecha_respuesta <= fecha_solicitud:
+        return 0
+
+
+    minutos_totales = 0.0
+
+    dia_actual = fecha_solicitud.date()
+
+    ultimo_dia = fecha_respuesta.date()
+
+
+    while dia_actual <= ultimo_dia:
+
+
+        # ----------------------------------------------------
+        # SOLO LUNES A VIERNES
+        # ----------------------------------------------------
+
+        if dia_actual.weekday() < 5:
+
+
+            inicio_jornada = datetime.combine(
+                dia_actual,
+                HORA_APERTURA
+            )
+
+            fin_jornada = datetime.combine(
+                dia_actual,
+                HORA_CIERRE
+            )
+
+
+            # ------------------------------------------------
+            # INICIO EFECTIVO DEL DÍA
+            # ------------------------------------------------
+
+            if dia_actual == fecha_solicitud.date():
+
+                inicio_efectivo = max(
+                    fecha_solicitud,
+                    inicio_jornada
+                )
+
+            else:
+
+                inicio_efectivo = (
+                    inicio_jornada
+                )
+
+
+            # ------------------------------------------------
+            # FIN EFECTIVO DEL DÍA
+            # ------------------------------------------------
+
+            if dia_actual == fecha_respuesta.date():
+
+                fin_efectivo = min(
+                    fecha_respuesta,
+                    fin_jornada
+                )
+
+            else:
+
+                fin_efectivo = (
+                    fin_jornada
+                )
+
+
+            # ------------------------------------------------
+            # SUMAR SOLO SI EXISTE TIEMPO LABORAL
+            # ------------------------------------------------
+
+            if (
+                fin_efectivo
+                > inicio_efectivo
+            ):
+
+                diferencia = (
+                    fin_efectivo
+                    - inicio_efectivo
+                )
+
+                minutos_totales += (
+                    diferencia.total_seconds()
+                    / 60
+                )
+
+
+        dia_actual += timedelta(
+            days=1
+        )
+
+
+    return minutos_totales
 
 
 # ============================================================
@@ -407,10 +523,6 @@ def detectar_tipo_solicitud(
     )
 
 
-    # --------------------------------------------------------
-    # EQUIPO
-    # --------------------------------------------------------
-
     if es_equipo:
 
         if tiene_identificador:
@@ -421,10 +533,6 @@ def detectar_tipo_solicitud(
 
         return None
 
-
-    # --------------------------------------------------------
-    # CLIENTE
-    # --------------------------------------------------------
 
     else:
 
@@ -459,14 +567,10 @@ def extraer_rif(mensaje):
 
 
 # ============================================================
-# ANALIZAR MENSAJES
+# ANALIZAR TODOS LOS MENSAJES
 # ============================================================
 
-def analizar_solicitudes(
-    mensajes,
-    desde,
-    hasta
-):
+def analizar_solicitudes(mensajes):
 
     registros = []
 
@@ -477,12 +581,6 @@ def analizar_solicitudes(
         ]
 
         if fecha_hora is None:
-            continue
-
-        # Aplicar MISMO rango a todos los chats
-        if not (
-            desde <= fecha_hora <= hasta
-        ):
             continue
 
         tipo = detectar_tipo_solicitud(
@@ -516,38 +614,122 @@ def analizar_solicitudes(
         })
 
     return pd.DataFrame(
-        registros
+        registros,
+        columns=[
+            "Fecha y hora",
+            "Remitente",
+            "Tipo",
+            "RIF",
+            "Mensaje"
+        ]
     )
 
 
 # ============================================================
-# RELACIONAR SOLICITUD CON RESPUESTA
+# RELACIONAR SOLICITUDES CON RESPUESTAS
 # ============================================================
 
-def relacionar_solicitudes(df):
+def relacionar_solicitudes(
+    df,
+    desde,
+    hasta
+):
 
-    solicitudes = df[
-        df["Tipo"] == "SOLICITUD"
+    columnas_resultado = [
+        "Fecha solicitud",
+        "Solicitante",
+        "RIF",
+        "Estado",
+        "Fecha respuesta",
+        "Tiempo respuesta (min)"
+    ]
+
+
+    if df.empty:
+
+        return pd.DataFrame(
+            columns=columnas_resultado
+        )
+
+
+    # ========================================================
+    # SOLICITUDES DENTRO DEL RANGO
+    # ========================================================
+
+    solicitudes_rango = df[
+        (
+            df["Tipo"] == "SOLICITUD"
+        )
+        &
+        (
+            df["Fecha y hora"] >= desde
+        )
+        &
+        (
+            df["Fecha y hora"] <= hasta
+        )
     ].copy()
 
-    respuestas = df[
-        df["Tipo"] == "SOLICITUD-R"
+
+    # ========================================================
+    # RESPUESTAS DENTRO DEL RANGO
+    # ========================================================
+
+    respuestas_rango = df[
+        (
+            df["Tipo"] == "SOLICITUD-R"
+        )
+        &
+        (
+            df["Fecha y hora"] >= desde
+        )
+        &
+        (
+            df["Fecha y hora"] <= hasta
+        )
     ].copy()
 
-    solicitudes = solicitudes.sort_values(
+
+    # ========================================================
+    # SOLICITUDES ANTERIORES AL RANGO
+    # ========================================================
+
+    solicitudes_anteriores = df[
+        (
+            df["Tipo"] == "SOLICITUD"
+        )
+        &
+        (
+            df["Fecha y hora"] < desde
+        )
+    ].copy()
+
+
+    solicitudes_rango = solicitudes_rango.sort_values(
         "Fecha y hora"
     )
 
-    respuestas = respuestas.sort_values(
+    respuestas_rango = respuestas_rango.sort_values(
         "Fecha y hora"
     )
+
+    solicitudes_anteriores = solicitudes_anteriores.sort_values(
+        "Fecha y hora"
+    )
+
 
     respuestas_usadas = set()
+
+    solicitudes_anteriores_usadas = set()
 
     resultado = []
 
 
-    for indice_solicitud, solicitud in solicitudes.iterrows():
+    # ========================================================
+    # SOLICITUDES DENTRO DEL RANGO
+    # ========================================================
+
+    for indice_solicitud, solicitud in solicitudes_rango.iterrows():
 
         rif = solicitud[
             "RIF"
@@ -558,13 +740,9 @@ def relacionar_solicitudes(df):
         indice_respuesta_encontrada = None
 
 
-        # ----------------------------------------------------
-        # MATCH POR RIF
-        # ----------------------------------------------------
-
         if rif:
 
-            for indice_respuesta, respuesta in respuestas.iterrows():
+            for indice_respuesta, respuesta in respuestas_rango.iterrows():
 
                 if indice_respuesta in respuestas_usadas:
                     continue
@@ -599,19 +777,21 @@ def relacionar_solicitudes(df):
                 indice_respuesta_encontrada
             )
 
-            diferencia = (
-                respuesta_encontrada[
-                    "Fecha y hora"
-                ]
-                - solicitud[
-                    "Fecha y hora"
-                ]
-            )
+
+            # NUEVO:
+            # calcular únicamente minutos laborales
 
             minutos_respuesta = (
-                diferencia.total_seconds()
-                / 60
+                calcular_minutos_laborales(
+                    solicitud[
+                        "Fecha y hora"
+                    ],
+                    respuesta_encontrada[
+                        "Fecha y hora"
+                    ]
+                )
             )
+
 
             estado = "Contestada"
 
@@ -666,17 +846,140 @@ def relacionar_solicitudes(df):
         })
 
 
-    return pd.DataFrame(
-        resultado,
-        columns=[
-            "Fecha solicitud",
-            "Solicitante",
-            "RIF",
-            "Estado",
-            "Fecha respuesta",
-            "Tiempo respuesta (min)"
+    # ========================================================
+    # RESCATAR SOLICITUDES ANTERIORES
+    # ========================================================
+
+    for indice_respuesta, respuesta in respuestas_rango.iterrows():
+
+        if indice_respuesta in respuestas_usadas:
+            continue
+
+
+        rif_respuesta = respuesta[
+            "RIF"
         ]
+
+
+        if not rif_respuesta:
+            continue
+
+
+        candidatos = solicitudes_anteriores[
+            solicitudes_anteriores[
+                "RIF"
+            ] == rif_respuesta
+        ].copy()
+
+
+        candidatos = candidatos[
+            candidatos[
+                "Fecha y hora"
+            ] < respuesta[
+                "Fecha y hora"
+            ]
+        ]
+
+
+        candidatos = candidatos[
+            ~candidatos.index.isin(
+                solicitudes_anteriores_usadas
+            )
+        ]
+
+
+        if candidatos.empty:
+            continue
+
+
+        # Solicitud anterior más reciente
+
+        indice_solicitud_anterior = (
+            candidatos[
+                "Fecha y hora"
+            ]
+            .idxmax()
+        )
+
+
+        solicitud_anterior = candidatos.loc[
+            indice_solicitud_anterior
+        ]
+
+
+        solicitudes_anteriores_usadas.add(
+            indice_solicitud_anterior
+        )
+
+        respuestas_usadas.add(
+            indice_respuesta
+        )
+
+
+        # ====================================================
+        # NUEVO:
+        # TIEMPO LABORAL DE SOLICITUD ANTERIOR
+        # ====================================================
+
+        minutos_respuesta = (
+            calcular_minutos_laborales(
+                solicitud_anterior[
+                    "Fecha y hora"
+                ],
+                respuesta[
+                    "Fecha y hora"
+                ]
+            )
+        )
+
+
+        resultado.append({
+
+            "Fecha solicitud":
+                solicitud_anterior[
+                    "Fecha y hora"
+                ],
+
+            "Solicitante":
+                solicitud_anterior[
+                    "Remitente"
+                ],
+
+            "RIF":
+                rif_respuesta,
+
+            "Estado":
+                "Contestada",
+
+            "Fecha respuesta":
+                respuesta[
+                    "Fecha y hora"
+                ],
+
+            "Tiempo respuesta (min)":
+                round(
+                    minutos_respuesta,
+                    1
+                )
+        })
+
+
+    detalle = pd.DataFrame(
+        resultado,
+        columns=columnas_resultado
     )
+
+
+    if not detalle.empty:
+
+        detalle = detalle.sort_values(
+            "Fecha solicitud"
+        ).reset_index(
+            drop=True
+        )
+
+
+    return detalle
 
 
 # ============================================================
@@ -742,9 +1045,6 @@ def estilizar_excel(writer):
 
         hoja.freeze_panes = "A2"
 
-        # ----------------------------------------------------
-        # ENCABEZADOS
-        # ----------------------------------------------------
 
         for celda in hoja[1]:
 
@@ -769,10 +1069,6 @@ def estilizar_excel(writer):
             )
 
 
-        # ----------------------------------------------------
-        # TODAS LAS CELDAS
-        # ----------------------------------------------------
-
         for fila in hoja.iter_rows():
 
             for celda in fila:
@@ -789,10 +1085,6 @@ def estilizar_excel(writer):
                 )
 
 
-        # ----------------------------------------------------
-        # ALTO DE FILAS
-        # ----------------------------------------------------
-
         hoja.row_dimensions[1].height = 25
 
         for numero_fila in range(
@@ -805,25 +1097,16 @@ def estilizar_excel(writer):
             ].height = 22
 
 
-        # ----------------------------------------------------
-        # ANCHO DE COLUMNAS
-        # ----------------------------------------------------
-
         if nombre_hoja == "Resumen":
 
             anchos = {
 
-                "A": 20,   # Agente
-
-                "B": 15,   # Solicitudes
-
-                "C": 15,   # Contestados
-
-                "D": 17,   # Sin contestar
-
-                "E": 20,   # Tasa
-
-                "F": 32    # Tiempo promedio
+                "A": 20,
+                "B": 15,
+                "C": 15,
+                "D": 17,
+                "E": 20,
+                "F": 32
             }
 
 
@@ -831,21 +1114,14 @@ def estilizar_excel(writer):
 
             anchos = {
 
-                "A": 20,   # Agente
-
-                "B": 23,   # Fecha solicitud
-
-                "C": 24,   # Solicitante
-
-                "D": 18,   # RIF
-
-                "E": 17,   # Estado
-
-                "F": 23,   # Fecha respuesta
-
-                "G": 24,   # Tiempo
-
-                "H": 40    # Observaciones
+                "A": 20,
+                "B": 23,
+                "C": 24,
+                "D": 18,
+                "E": 17,
+                "F": 23,
+                "G": 24,
+                "H": 40
             }
 
 
@@ -860,10 +1136,6 @@ def estilizar_excel(writer):
                 columna
             ].width = ancho
 
-
-        # ----------------------------------------------------
-        # FORMATO DE FECHAS
-        # ----------------------------------------------------
 
         if nombre_hoja == "Solicitudes":
 
@@ -901,9 +1173,6 @@ def crear_excel(
         engine="openpyxl"
     ) as writer:
 
-        # ----------------------------------------------------
-        # HOJA 1 - RESUMEN
-        # ----------------------------------------------------
 
         resumen.to_excel(
             writer,
@@ -912,20 +1181,12 @@ def crear_excel(
         )
 
 
-        # ----------------------------------------------------
-        # HOJA 2 - SOLICITUDES
-        # ----------------------------------------------------
-
         detalle.to_excel(
             writer,
             index=False,
             sheet_name="Solicitudes"
         )
 
-
-        # ----------------------------------------------------
-        # FORMATO
-        # ----------------------------------------------------
 
         estilizar_excel(
             writer
@@ -999,10 +1260,6 @@ if archivos:
     hoy = ahora.date()
 
 
-    # --------------------------------------------------------
-    # LUNES -> VIERNES
-    # --------------------------------------------------------
-
     if hoy.weekday() == 0:
 
         fecha_desde_default = (
@@ -1018,19 +1275,11 @@ if archivos:
         )
 
 
-    # --------------------------------------------------------
-    # 4:30 PM
-    # --------------------------------------------------------
-
     hora_default = time(
         16,
         30
     )
 
-
-    # ========================================================
-    # INTERVALO
-    # ========================================================
 
     intervalo_minutos = st.selectbox(
 
@@ -1051,11 +1300,8 @@ if archivos:
     )
 
 
-    # ========================================================
-    # LISTA DE HORAS
-    # ========================================================
-
     horas = []
+
 
     for hora in range(24):
 
@@ -1120,10 +1366,6 @@ if archivos:
         )
     )
 
-
-    # ========================================================
-    # DESDE / HASTA
-    # ========================================================
 
     col1, col2 = st.columns(
         2
@@ -1216,10 +1458,6 @@ if archivos:
         ]
 
 
-    # ========================================================
-    # COMBINAR
-    # ========================================================
-
     desde = datetime.combine(
         fecha_desde,
         hora_desde
@@ -1232,10 +1470,6 @@ if archivos:
 
     st.divider()
 
-
-    # ========================================================
-    # VALIDACIÓN
-    # ========================================================
 
     if desde >= hasta:
 
@@ -1290,10 +1524,6 @@ if archivos:
             )
 
 
-            # ------------------------------------------------
-            # LEER TXT
-            # ------------------------------------------------
-
             try:
 
                 contenido = (
@@ -1314,138 +1544,102 @@ if archivos:
                 )
 
 
-            # ------------------------------------------------
-            # LEER MENSAJES
-            # ------------------------------------------------
-
             mensajes = leer_chat_whatsapp(
                 contenido
             )
 
 
-            # ------------------------------------------------
-            # ANALIZAR MISMO PERÍODO
-            # ------------------------------------------------
-
             df = analizar_solicitudes(
-                mensajes,
+                mensajes
+            )
+
+
+            detalle = relacionar_solicitudes(
+                df,
                 desde,
                 hasta
             )
 
 
-            # ------------------------------------------------
-            # SI NO HAY REGISTROS
-            # ------------------------------------------------
+            # =================================================
+            # ESTADÍSTICAS
+            # =================================================
 
-            if df.empty:
+            total_solicitudes = len(
+                detalle
+            )
 
-                total_solicitudes = 0
 
-                total_contestadas = 0
-
-                total_sin_contestar = 0
-
-                porcentaje_respuesta = 0
-
-                promedio_respuesta = None
-
-                promedio_texto = "—"
-
-                detalle = pd.DataFrame(
-                    columns=[
-                        "Fecha solicitud",
-                        "Solicitante",
-                        "RIF",
-                        "Estado",
-                        "Fecha respuesta",
-                        "Tiempo respuesta (min)"
-                    ]
+            total_contestadas = (
+                detalle[
+                    "Estado"
+                ]
+                .eq(
+                    "Contestada"
                 )
+                .sum()
+            )
 
 
-            # ------------------------------------------------
-            # SI HAY REGISTROS
-            # ------------------------------------------------
+            total_sin_contestar = (
+                detalle[
+                    "Estado"
+                ]
+                .eq(
+                    "Sin contestar"
+                )
+                .sum()
+            )
+
+
+            if total_solicitudes > 0:
+
+                porcentaje_respuesta = (
+
+                    total_contestadas
+                    / total_solicitudes
+                    * 100
+                )
 
             else:
 
-                detalle = relacionar_solicitudes(
-                    df
-                )
-
-
-                total_solicitudes = len(
-                    detalle
-                )
-
-
-                total_contestadas = (
-                    detalle[
-                        "Estado"
-                    ]
-                    .eq(
-                        "Contestada"
-                    )
-                    .sum()
-                )
-
-
-                total_sin_contestar = (
-                    detalle[
-                        "Estado"
-                    ]
-                    .eq(
-                        "Sin contestar"
-                    )
-                    .sum()
-                )
-
-
-                if total_solicitudes > 0:
-
-                    porcentaje_respuesta = (
-
-                        total_contestadas
-                        / total_solicitudes
-                        * 100
-                    )
-
-                else:
-
-                    porcentaje_respuesta = 0
-
-
-                tiempos_respuesta = detalle[
-                    detalle[
-                        "Estado"
-                    ]
-                    == "Contestada"
-                ][
-                    "Tiempo respuesta (min)"
-                ]
-
-
-                if not tiempos_respuesta.empty:
-
-                    promedio_respuesta = (
-                        tiempos_respuesta.mean()
-                    )
-
-                else:
-
-                    promedio_respuesta = None
-
-
-                promedio_texto = (
-                    formatear_tiempo(
-                        promedio_respuesta
-                    )
-                )
+                porcentaje_respuesta = 0
 
 
             # =================================================
-            # RESUMEN DE ESTE AGENTE
+            # TIEMPO PROMEDIO LABORAL
+            # =================================================
+
+            tiempos_respuesta = detalle[
+                detalle[
+                    "Estado"
+                ]
+                == "Contestada"
+            ][
+                "Tiempo respuesta (min)"
+            ]
+
+
+            if not tiempos_respuesta.empty:
+
+                promedio_respuesta = (
+                    tiempos_respuesta.mean()
+                )
+
+            else:
+
+                promedio_respuesta = None
+
+
+            promedio_texto = (
+                formatear_tiempo(
+                    promedio_respuesta
+                )
+            )
+
+
+            # =================================================
+            # RESUMEN
             # =================================================
 
             resumen_resultados.append({
@@ -1473,7 +1667,7 @@ if archivos:
 
 
             # =================================================
-            # DETALLE DE ESTE AGENTE
+            # DETALLE
             # =================================================
 
             if not detalle.empty:
@@ -1498,17 +1692,13 @@ if archivos:
 
 
         # ====================================================
-        # CREAR RESUMEN
+        # RESUMEN GENERAL
         # ====================================================
 
         resumen_df = pd.DataFrame(
             resumen_resultados
         )
 
-
-        # ====================================================
-        # ORDENAR RESUMEN SEGÚN LISTA DE AGENTES
-        # ====================================================
 
         orden_agentes = {
             agente: indice
@@ -1545,7 +1735,7 @@ if archivos:
 
 
         # ====================================================
-        # UNIR TODAS LAS SOLICITUDES
+        # DETALLE GENERAL
         # ====================================================
 
         if todos_los_detalles:
@@ -1572,7 +1762,7 @@ if archivos:
 
 
         # ====================================================
-        # MOSTRAR ESTADÍSTICAS EN PANTALLA
+        # MOSTRAR RESUMEN
         # ====================================================
 
         st.subheader(
@@ -1671,7 +1861,7 @@ if archivos:
 
 
         # ====================================================
-        # GRÁFICA GENERAL
+        # GRÁFICA
         # ====================================================
 
         st.subheader(
@@ -1700,7 +1890,7 @@ if archivos:
 
 
         # ====================================================
-        # GENERAR EXCEL
+        # EXCEL
         # ====================================================
 
         archivo_excel = crear_excel(
@@ -1711,10 +1901,6 @@ if archivos:
 
         st.divider()
 
-
-        # ====================================================
-        # DESCARGAR
-        # ====================================================
 
         st.download_button(
 
