@@ -56,7 +56,8 @@ NUMEROS_EQUIPO = {
 NOMBRES_EQUIPO = {
     "agentesautorizados",
     "rubenccr",
-    "geraldine"
+    "geraldine",
+    "paolaperez(gerente)"
 }
 
 
