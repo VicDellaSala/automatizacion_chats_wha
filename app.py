@@ -58,6 +58,7 @@ NOMBRES_EQUIPO = {
     "rubenccr",
     "geraldine",
     "paolapérez(gerente)"
+    "Julia"
 }
 
 
